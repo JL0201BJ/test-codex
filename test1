@@ -1,0 +1,401 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import pandas as pd
+import os
+import difflib
+import sys
+
+
+def select_file(prompt):
+    root = tk.Tk()
+    root.withdraw()
+    file_path = filedialog.askopenfilename(
+        title=prompt,
+        filetypes=[("Excel Files", "*.xlsx *.xls")]
+    )
+    root.destroy()
+    return file_path
+
+
+def save_file():
+    root = tk.Tk()
+    root.withdraw()
+    file_path = filedialog.asksaveasfilename(
+        title="请选择保存文件的路径和文件名",
+        defaultextension=".xlsx",
+        filetypes=[("Excel Files", "*.xlsx *.xls")]
+    )
+    root.destroy()
+    return file_path
+
+
+def fuzzy_lookup(val, mapping, threshold=0.8):
+    """
+    对给定val在mapping字典的键中进行模糊匹配，
+    如果匹配度最高且>=threshold，则返回对应的value（确保返回文本，保留前导0），
+    否则返回空字符串。
+    """
+    val = str(val).strip()
+    best_val = ""
+    best_ratio = 0
+    for k, v in mapping.items():
+        ratio = difflib.SequenceMatcher(None, val.lower(), str(k).lower()).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_val = v
+    return str(best_val) if best_ratio >= threshold else ""
+
+
+def load_dictionary(prompt, key_col, value_col):
+    """
+    弹出对话框选择字典文件，读取第一个sheet，
+    返回一个字典映射 {key: value}，其中value均读取为字符串（保留前导0）
+    """
+    file_path = select_file(f"选择 {prompt} 字典文件")
+    if not file_path:
+        messagebox.showerror("错误", f"未选择 {prompt} 字典文件")
+        sys.exit(1)
+    try:
+        # 使用 converters 确保 key_col 与 value_col 均以字符串形式读取
+        converters = {key_col: lambda x: str(x).strip(), value_col: lambda x: str(x).strip() if pd.notnull(x) else ""}
+        df = pd.read_excel(file_path, converters=converters)
+        df = df.dropna(subset=[key_col])
+        mapping = pd.Series(df[value_col].values, index=df[key_col].values).to_dict()
+        return mapping
+    except Exception as e:
+        messagebox.showerror("错误", f"读取 {prompt} 字典文件时出错: {e}")
+        sys.exit(1)
+
+
+def load_exchange_rate_table():
+    """
+    加载汇率字典表，返回一个DataFrame
+    """
+    file_path = select_file("请选择汇率字典表文件（包含年份、月份、rate三列）")
+    if not file_path:
+        messagebox.showerror("错误", "未选择汇率字典表文件")
+        sys.exit(1)
+    try:
+        rate_df = pd.read_excel(file_path)
+        # 确保列名正确
+        rate_df.columns = rate_df.columns.str.strip()
+        required_cols = ['年份', '月份', 'rate']
+        for col in required_cols:
+            if col not in rate_df.columns:
+                messagebox.showerror("错误", f"汇率字典表缺少必需的列: {col}")
+                sys.exit(1)
+        # 将年份转换为数字，月份转换为英文缩写
+        rate_df['年份'] = pd.to_numeric(rate_df['年份'], errors='coerce')
+        rate_df['月份'] = rate_df['月份'].astype(str).str.strip()
+        # 确保月份是标准的英文缩写
+        month_map = {
+            'Jan': 'Jan', 'jan': 'Jan', 'January': 'Jan', '1': 'Jan', '01': 'Jan',
+            'Feb': 'Feb', 'feb': 'Feb', 'February': 'Feb', '2': 'Feb', '02': 'Feb',
+            'Mar': 'Mar', 'mar': 'Mar', 'March': 'Mar', '3': 'Mar', '03': 'Mar',
+            'Apr': 'Apr', 'apr': 'Apr', 'April': 'Apr', '4': 'Apr', '04': 'Apr',
+            'May': 'May', 'may': 'May', '5': 'May', '05': 'May',
+            'Jun': 'Jun', 'jun': 'Jun', 'June': 'Jun', '6': 'Jun', '06': 'Jun',
+            'Jul': 'Jul', 'jul': 'Jul', 'July': 'Jul', '7': 'Jul', '07': 'Jul',
+            'Aug': 'Aug', 'aug': 'Aug', 'August': 'Aug', '8': 'Aug', '08': 'Aug',
+            'Sep': 'Sep', 'sep': 'Sep', 'September': 'Sep', '9': 'Sep', '09': 'Sep',
+            'Oct': 'Oct', 'oct': 'Oct', 'October': 'Oct', '10': 'Oct',
+            'Nov': 'Nov', 'nov': 'Nov', 'November': 'Nov', '11': 'Nov',
+            'Dec': 'Dec', 'dec': 'Dec', 'December': 'Dec', '12': 'Dec'
+        }
+        rate_df['月份'] = rate_df['月份'].map(month_map)
+        rate_df = rate_df.dropna(subset=['年份', '月份'])
+        return rate_df
+    except Exception as e:
+        messagebox.showerror("错误", f"读取汇率字典表失败: {e}")
+        sys.exit(1)
+
+
+def get_exchange_rate(rate_df, year, month):
+    """
+    根据年份和月份从汇率表中查找对应的汇率
+    """
+    try:
+        year = int(year)
+        month = str(month).strip()
+        # 标准化月份为英文缩写
+        month_map = {
+            'Jan': 'Jan', 'jan': 'Jan', 'January': 'Jan', '1': 'Jan', '01': 'Jan',
+            'Feb': 'Feb', 'feb': 'Feb', 'February': 'Feb', '2': 'Feb', '02': 'Feb',
+            'Mar': 'Mar', 'mar': 'Mar', 'March': 'Mar', '3': 'Mar', '03': 'Mar',
+            'Apr': 'Apr', 'apr': 'Apr', 'April': 'Apr', '4': 'Apr', '04': 'Apr',
+            'May': 'May', 'may': 'May', '5': 'May', '05': 'May',
+            'Jun': 'Jun', 'jun': 'Jun', 'June': 'Jun', '6': 'Jun', '06': 'Jun',
+            'Jul': 'Jul', 'jul': 'Jul', 'July': 'Jul', '7': 'Jul', '07': 'Jul',
+            'Aug': 'Aug', 'aug': 'Aug', 'August': 'Aug', '8': 'Aug', '08': 'Aug',
+            'Sep': 'Sep', 'sep': 'Sep', 'September': 'Sep', '9': 'Sep', '09': 'Sep',
+            'Oct': 'Oct', 'oct': 'Oct', 'October': 'Oct', '10': 'Oct',
+            'Nov': 'Nov', 'nov': 'Nov', 'November': 'Nov', '11': 'Nov',
+            'Dec': 'Dec', 'dec': 'Dec', 'December': 'Dec', '12': 'Dec'
+        }
+        month = month_map.get(month, month)
+        rate = rate_df[(rate_df['年份'] == year) & (rate_df['月份'] == month)]['rate'].values[0]
+        return float(rate)
+    except:
+        # 如果找不到对应汇率，返回None
+        return None
+
+
+def process_time(time_val):
+    """
+    将时间字段转换为(年份, 月份)，
+    如果年份为2024，则统一返回(2025, "Jan")；
+    否则返回解析后的年份和英文月份缩写，
+    解析失败返回(None, "")。
+    """
+    try:
+        dt = pd.to_datetime(time_val, errors='coerce')
+        if pd.isna(dt):
+            return (None, "")
+        if dt.year == 2024:
+            return (2025, "Jan")
+        else:
+            month_map = {
+                1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr',
+                5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Aug',
+                9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'
+            }
+            return (dt.year, month_map.get(dt.month, ""))
+    except:
+        return (None, "")
+
+
+def process_row(row, ship_dict, detail_dict, supplier_dict, dept_dict, rate_df):
+    # 根据"公司"确定账簿编码及本币币种
+    company = str(row.get("公司", "")).strip()
+    if company == "上海":
+        account_code = "101"
+        local_currency = "CNY"
+    elif company == "香港":
+        account_code = "401"
+        local_currency = "USD"
+    else:
+        account_code = company  # 非"上海"或"香港"则保留原值
+        local_currency = ""
+
+    # 模糊匹配字典
+    ship_name = str(row.get("船舶名称", "")).strip()
+    ship_code = fuzzy_lookup(ship_name, ship_dict, 0.8)
+    detail = str(row.get("船管成本明细名称", "")).strip()
+    detail_code = fuzzy_lookup(detail, detail_dict, 0.8)
+    # 保持原有文本格式
+    detail_code = str(detail_code).strip()
+
+    supplier = str(row.get("*供应商名称", "")).strip()
+    supplier_code = fuzzy_lookup(supplier, supplier_dict, 0.8)
+    dept = str(row.get("部门名称", "")).strip()
+    dept_code = fuzzy_lookup(dept, dept_dict, 0.8)
+
+    # 取金额：如果"结算金额"非空，则使用之，否则使用"暂估金额"
+    settlement_val = row.get("结算金额", None)
+    temp_val = row.get("暂估金额", None)
+    try:
+        if pd.notnull(settlement_val):
+            base_amount = float(settlement_val)
+        else:
+            base_amount = float(temp_val) if pd.notnull(temp_val) else 0
+    except:
+        base_amount = 0
+    try:
+        vat = float(row.get("国内增值税专用发票税额", 0)) if pd.notnull(row.get("国内增值税专用发票税额", None)) else 0
+    except:
+        vat = 0
+    original_amount = base_amount - vat
+
+    # 获取汇率
+    complete_time = row.get("完工时间", None)
+    invoice_time = row.get("发票时间", None)
+    if pd.notnull(complete_time):
+        year_val, month_val = process_time(complete_time)
+    else:
+        year_val, month_val = process_time(invoice_time)
+
+    ex_rate = get_exchange_rate(rate_df, year_val, month_val) if year_val and month_val else None
+
+    orig_currency = str(row.get("币种", "")).strip().upper()
+    if ex_rate is not None:
+        if company == "上海" and orig_currency == "USD":
+            local_amount = original_amount * ex_rate
+            rate_used = str(ex_rate)
+        elif company == "香港" and orig_currency == "CNY":
+            local_amount = original_amount * (1 / ex_rate)
+            rate_used = str(1 / ex_rate)
+        else:
+            local_amount = original_amount
+            rate_used = ""
+    else:
+        local_amount = original_amount
+        rate_used = ""
+
+    if company == "上海":
+        local_curr = "CNY"
+    elif company == "香港":
+        local_curr = "USD"
+    else:
+        local_curr = ""
+
+    return pd.Series({
+        "船舶名称编码": ship_code,
+        "船管成本明细编码": detail_code,
+        "供应商编码": supplier_code,
+        "原币金额": original_amount,
+        "本币金额": local_amount,
+        "汇率": rate_used,
+        "本币金额币种": local_curr,
+        "账簿编码": account_code,
+        "部门编码": dept_code,
+        "完工年份": year_val,
+        "完工月份": month_val,
+        "发票年份": year_val,
+        "发票月份": month_val
+    })
+
+
+def main():
+    root = tk.Tk()
+    root.withdraw()
+
+    # Step 1: 选择待处理的大表文件
+    main_file = select_file("选择待处理的大表文件")
+    if not main_file:
+        print("未选择大表文件，程序退出。")
+        return
+    try:
+        main_df = pd.read_excel(main_file)
+    except Exception as e:
+        messagebox.showerror("错误", f"读取大表文件出错：{e}")
+        return
+
+    # Step 2: 加载字典文件
+    ship_dict = load_dictionary("船舶名称", "船舶名称", "船舶名称编码")
+    detail_dict = load_dictionary("船管成本明细", "船管成本明细名称", "船管成本明细编码")
+    supplier_dict = load_dictionary("供应商", "*供应商名称", "供应商编码")
+    dept_dict = load_dictionary("部门", "部门名称", "部门编码")
+
+    # Step 3: 加载汇率字典表
+    rate_df = load_exchange_rate_table()
+
+    # Step 4: 对大表逐行处理，计算新增字段
+    new_cols = main_df.apply(lambda row: process_row(row, ship_dict, detail_dict, supplier_dict, dept_dict, rate_df),
+                             axis=1)
+    overlap = ["船舶名称编码", "船管成本明细编码", "供应商编码", "原币金额", "本币金额", "汇率", "本币金额币种",
+               "账簿编码", "部门编码"]
+    main_df_clean = main_df.drop(columns=overlap, errors="ignore")
+    joined_df = main_df_clean.join(new_cols)
+
+    # Step 5: 重新调整列顺序，新计算的列插入到原始相关列右侧
+    final_order = [
+        "船舶名称",
+        "船舶名称编码",
+        "识别号",
+        "船管成本明细名称",
+        "船管成本明细编码",
+        "*供应商名称",
+        "供应商编码",
+        "暂估金额",
+        "结算金额",
+        "国内增值税专用发票税额",
+        "原币金额",
+        "币种",
+        "本币金额",
+        "汇率",
+        "本币金额币种",
+        "是否完工",
+        "是否发票",
+        "完工时间",
+        "发票时间",
+        "年份",
+        "月份",
+        "公司",
+        "账簿编码",
+        "部门名称",
+        "部门编码",
+        "是否预付",
+        "来源文件",
+        "工作表名称"
+    ]
+    final_df = pd.DataFrame()
+    for col in final_order:
+        if col == "年份":
+            final_df[col] = joined_df.get("完工年份", "")
+        elif col == "月份":
+            final_df[col] = joined_df.get("完工月份", "")
+        else:
+            final_df[col] = joined_df.get(col, "")
+
+    # Step 6: 在现有文件末尾增加五列
+    # "船管成本明细"：取"船管成本明细编码"和"船管成本明细名称"，中间空格连接
+    final_df["船管成本明细"] = final_df["船管成本明细编码"].astype(str) + " " + final_df["船管成本明细名称"].astype(str)
+
+    # "Month"：将"月份"转换为英文月份缩写（Jan, Feb, …, Dec）
+    month_map = {"Jan": "Jan", "Feb": "Feb", "Mar": "Mar", "Apr": "Apr",
+                 "May": "May", "Jun": "Jun", "Jul": "Jul", "Aug": "Aug",
+                 "Sep": "Sep", "Oct": "Oct", "Nov": "Nov", "Dec": "Dec"}
+    final_df["Month"] = final_df["月份"].apply(lambda x: month_map.get(x.strip(), "") if isinstance(x, str) else "")
+
+    # "CNY折算金额"：根据币种和汇率计算
+    def calc_cny(row):
+        cur = str(row["币种"]).strip().upper() if pd.notnull(row["币种"]) else ""
+        year = row["年份"] if pd.notnull(row["年份"]) else None
+        month = str(row["月份"]).strip() if pd.notnull(row["月份"]) else ""
+
+        if year is None or not month:
+            return row["原币金额"]
+
+        try:
+            rate = get_exchange_rate(rate_df, year, month)
+            if rate is None:
+                return row["原币金额"]
+
+            if cur == "CNY":
+                return row["原币金额"]
+            elif cur == "USD":
+                return row["原币金额"] * rate
+            else:
+                return row["原币金额"]
+        except:
+            return row["原币金额"]
+
+    final_df["CNY折算金额"] = final_df.apply(calc_cny, axis=1)
+
+    # "Mapping1"和"Mapping2"：用"船管成本明细"列的值与字典匹配
+    mapping_file = select_file("请选择船管成本明细mapping表文件 (例如: 船管成本明细mapping表0319.xlsx)")
+    if mapping_file:
+        try:
+            mapping_df = pd.read_excel(mapping_file, converters={"船管成本明细": str, "Mapping1": str, "Mapping2": str})
+            mapping_df.columns = mapping_df.columns.str.strip()
+            mapping_df.rename(columns=lambda x: x.replace(" ", ""), inplace=True)
+        except Exception as e:
+            messagebox.showerror("错误", f"读取船管成本明细mapping表失败: {e}")
+            sys.exit(1)
+        mapping_dict1 = pd.Series(mapping_df["Mapping1"].values, index=mapping_df["船管成本明细"]).to_dict()
+        mapping_dict2 = pd.Series(mapping_df["Mapping2"].values, index=mapping_df["船管成本明细"]).to_dict()
+        final_df["Mapping1"] = final_df["船管成本明细"].apply(lambda x: mapping_dict1.get(x, ""))
+        final_df["Mapping2"] = final_df["船管成本明细"].apply(lambda x: mapping_dict2.get(x, ""))
+    else:
+        final_df["Mapping1"] = ""
+        final_df["Mapping2"] = ""
+
+    additional_cols = ["船管成本明细", "Month", "CNY折算金额", "Mapping1", "Mapping2"]
+    for col in additional_cols:
+        if col not in final_df.columns:
+            final_df[col] = ""
+
+    # Step 7: 重新保存最终文件
+    final_output = save_file()
+    if not final_output:
+        messagebox.showerror("错误", "未选择最终保存路径")
+        sys.exit(1)
+    try:
+        final_df.to_excel(final_output, index=False)
+        messagebox.showinfo("完成", "处理并保存成功！")
+    except Exception as e:
+        messagebox.showerror("错误", f"最终保存文件失败: {e}")
+
+
+if __name__ == '__main__':
+    main()
